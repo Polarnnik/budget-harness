@@ -50,6 +50,7 @@ class Reply:
     tokens_in: int
     tokens_out: int
     cost: float
+    truncated: bool = False      # the output hit max_tokens: its last line may be cut short
 
 
 def estimate_input_tokens(messages: list[dict]) -> int:
@@ -60,6 +61,34 @@ def estimate_input_tokens(messages: list[dict]) -> int:
 def strip_reasoning(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
     return text.split("</think>")[-1].strip()
+
+
+class Gate:
+    """Concurrency limit that shrinks when the proxy says it is too high.
+
+    The rules allow five sessions, but a key may allow fewer; the proxy answers
+    429 then. Each 429 lowers the limit by one, at most once per second, so the
+    harness settles on what the proxy accepts instead of hammering it.
+    """
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.active = 0
+        self._lowered = 0.0
+
+    async def __aenter__(self):
+        while self.active >= self.limit:
+            await asyncio.sleep(0.05)
+        self.active += 1
+
+    async def __aexit__(self, *exc):
+        self.active -= 1
+
+    def too_many(self) -> None:
+        if self.limit > 1 and time.monotonic() - self._lowered > 1:
+            self.limit -= 1
+            self._lowered = time.monotonic()
+            log.info("proxy rate limit: parallel calls lowered to %d", self.limit)
 
 
 def _rate_limited(e: Exception) -> bool:
@@ -83,7 +112,7 @@ class LLM:
         self.calls = 0
         self.failures_in_row = 0
         self.dead = False     # proxy stopped answering: budget is gone or network is down
-        self._gate = asyncio.Semaphore(config.MAX_PARALLEL)
+        self._gate = Gate(config.MAX_PARALLEL)
         # max_retries=0: a silent SDK retry would spend tokens the ledger never sees.
         self._model = init_model(
             provider="OpenAI", model_name=config.FAST, api_key=api_key, api_base=base_url,
@@ -114,8 +143,9 @@ class LLM:
                 break
             except Exception as e:  # noqa: BLE001 - any proxy/SDK failure ends this call
                 attempt += 1
-                if _rate_limited(e) and attempt <= config.RATE_LIMIT_RETRIES:
+                if _rate_limited(e) and time.monotonic() - started < config.RATE_LIMIT_WAIT_S:
                     # The proxy rejected the request before running it: nothing was billed.
+                    self._gate.too_many()
                     await asyncio.sleep(min(8, 0.5 * 2 ** attempt) * (0.5 + random.random()))
                     continue
                 # A failed request may still be billed; count its input to stay on the safe side.
@@ -139,7 +169,7 @@ class LLM:
         self._trace(tag=tag, model=model, max_tokens=max_tokens, tokens_in=t_in, tokens_out=t_out,
                     reasoning=usage.reasoning_tokens if usage else 0, cost=cost,
                     seconds=round(time.monotonic() - started, 2), messages=messages, reply=resp.content)
-        return Reply(text, t_in, t_out, cost)
+        return Reply(text, t_in, t_out, cost, t_out >= max_tokens)
 
     def _trace(self, **row) -> None:
         if not self.trace_path:

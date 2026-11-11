@@ -26,7 +26,7 @@ MODELS = {"qwen3.6-35b-a3b-noreason": 256, "qwen3.8-27b-noreason": 256,
 def run(model: str, cap: int, tasks_src: Path, out: Path) -> None:
     tasks = out / "tasks"
     shutil.copytree(tasks_src, tasks)
-    env = dict(os.environ, BUDGET="1000000", HARNESS_CHAIN=f"{model}:{cap}", HARNESS_TRACE=str(out / "trace.jsonl"))
+    env = dict(os.environ, BUDGET="1000000", HARNESS_CHAIN=f"{model}:{cap}", HARNESS_VERIFY="0", HARNESS_TRACE=str(out / "trace.jsonl"))
     with open(out / "run.log", "w") as log:
         subprocess.run([sys.executable, "-B", str(ROOT / "run_agent.py"), "--tasks-dir", str(tasks)],
                        env=env, stdout=log, stderr=subprocess.STDOUT)

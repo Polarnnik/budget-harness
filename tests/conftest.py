@@ -11,18 +11,30 @@ from harness.llm import Budget, Reply  # noqa: E402
 
 
 class FakeLLM:
-    """Scripted model: the first rule whose key occurs in the prompt answers."""
+    """Scripted model: the first rule whose key occurs in the prompt answers.
 
-    def __init__(self, rules: dict[str, list[str] | str], budget: float = 10_000):
+    `by_model` overrides a rule for one model: {(key, model): reply}.
+    """
+
+    def __init__(self, rules: dict[str, list[str] | str], budget: float = 10_000, by_model: dict | None = None):
         self.rules = {k: [v] if isinstance(v, str) else list(v) for k, v in rules.items()}
+        self.by_model = by_model or {}
         self.budget = Budget(budget)
-        self.calls = 0
         self.prompts: list[str] = []
+        self.tags: list[str] = []
+
+    @property
+    def calls(self) -> int:
+        """Calls of the first pass; second opinions carry a `v` or `d` label in the tag."""
+        return sum(t.split("#")[1].isdigit() for t in self.tags)
 
     async def ask(self, model, messages, max_tokens, tag=""):
         prompt = "\n".join(m["content"] for m in messages)
         self.prompts.append(prompt)
-        self.calls += 1
+        self.tags.append(tag)
+        for (key, name), text in self.by_model.items():
+            if key in prompt and name == model:
+                return Reply(text, len(prompt) // 3, len(text) // 3, 0)
         for key, replies in self.rules.items():
             if key in prompt:
                 text = replies.pop(0) if len(replies) > 1 else replies[0]

@@ -30,9 +30,12 @@ def passed(task_dir: Path, spec: dict) -> bool:
         if hidden.is_dir():
             shutil.copytree(hidden, ws, dirs_exist_ok=True)
         tests = sorted(p.name for p in ws.glob("test*.py"))
-        return answer == "DONE" and bool(tests) and all(
-            subprocess.run([sys.executable, "-B", t], cwd=ws, capture_output=True, timeout=60).returncode == 0
-            for t in tests)
+        try:
+            return answer == "DONE" and bool(tests) and all(
+                subprocess.run([sys.executable, "-B", t], cwd=ws, capture_output=True, timeout=60).returncode == 0
+                for t in tests)
+        except subprocess.TimeoutExpired:      # a test that hangs is a failed test
+            return False
     if spec.get("check") == "exact_int":
         try:
             return int(answer) == int(expected)

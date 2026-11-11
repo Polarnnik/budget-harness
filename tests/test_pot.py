@@ -15,3 +15,4 @@ def test_prose_around_code_is_dropped():
 
 def test_broken_code_is_returned_for_the_retry_message():
     assert extract_code("1 +") == "1 +"
+

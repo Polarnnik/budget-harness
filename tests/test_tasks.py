@@ -22,3 +22,9 @@ def test_missing_input_only_for_declared_family_without_files(tmp_path):
     assert missing_input(make(tmp_path / "a", "data_analysis", ["readme.md"]))
     assert not missing_input(make(tmp_path / "b", "data_analysis", ["sales.csv"]))
     assert not missing_input(make(tmp_path / "c", "math", []))
+
+
+def test_cards_with_markdown_emphasis_parse_to_clean_values():
+    from harness.kb import parse_card
+    title, fields = parse_card("# Ann Lee\n\n**Role:** engineer\n- **Born**: 1985\n* City: `Oslo`\n", "x")
+    assert title == "Ann Lee" and dict(fields) == {"Role": "engineer", "Born": 1985, "City": "Oslo"}

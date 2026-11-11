@@ -11,7 +11,8 @@ import re
 from pathlib import Path
 
 CARD_EXT = {".md", ".txt"}
-FIELD = re.compile(r"^\s*(?:[-*]\s+)?\**([A-Za-z][\w /-]{0,40}?)\**\s*:\s*(\S.*?)\s*$")
+# `Field: value`, also as a list item and with markdown emphasis: `- **Field:** value`.
+FIELD = re.compile(r"^\s*(?:[-*]\s+)?[*_`]*([A-Za-z][\w /-]{0,40}?)[*_`]*\s*:[*_`]*\s*(\S.*?)\s*$")
 
 
 def _norm(s) -> str:
@@ -64,7 +65,7 @@ def parse_card(text: str, fallback_title: str) -> tuple[str, Card]:
             continue
         m = FIELD.match(line)
         if m:
-            fields.setdefault(m[1].strip(), _value(m[2]))
+            fields.setdefault(m[1].strip(), _value(m[2].strip("*_`").strip()))
     return title or fallback_title, fields
 
 

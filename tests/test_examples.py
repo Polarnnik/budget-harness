@@ -77,7 +77,7 @@ def not_a_swap(tasks_dir):
 
 def test_model_patch_applied_when_swaps_do_not_help(tasks_dir):
     src = not_a_swap(tasks_dir)
-    llm = FakeLLM(dict(REPLIES, **{"s += x + 1": "2: return ' '.join(reversed(s.split()))\n8: s += x"}))
+    llm = FakeLLM(dict(REPLIES, **{"s += x + 1": "2| return ' '.join(reversed(s.split()))\n8| s += x"}))
     run(tasks_dir, llm)
     assert "        s += x\n" in src.read_text()
     r = subprocess.run([sys.executable, "test_mylib.py"], cwd=src.parent, capture_output=True)
@@ -144,3 +144,69 @@ def test_contradictory_tests_leave_no_answer(tasks_dir):
         "    def test_total", "    def test_x(self):\n        self.assertEqual(m.maximum([3, 9, 2]), 7)\n\n    def test_total"))
     status = run(tasks_dir, FakeLLM(REPLIES))
     assert status["coding_0007"] == "no answer"
+
+
+def test_prose_knowledge_base_goes_to_the_model_as_notes(tasks_dir):
+    kb = tasks_dir / "search_0001" / "workspace" / "kb"
+    for f in kb.iterdir():
+        f.write_text(f.read_text().replace(": ", " is "))        # no `Field: value` lines left
+    llm = FakeLLM(dict(REPLIES, **{"Irina Smith": "1983"}))
+    run(tasks_dir, llm)
+    prompt = next(p for p in llm.prompts if "Irina Smith" in p)
+    assert "Notes from the working directory" in prompt and "Born is 1983" in prompt
+    assert (tasks_dir / "search_0001" / "answer.txt").read_text().strip() == "1983"
+
+
+def test_second_step_builds_on_partial_progress_with_fresh_numbers(tasks_dir):
+    """Step one fixes one of two bugs; step two sees that state and fixes the other."""
+    src = not_a_swap(tasks_dir)
+    src.write_text(src.read_text().replace("sorted(s.split())", "list(s.split())[:1]"))
+    llm = FakeLLM(dict(REPLIES, **{"def first_n": ["8|         s += x", "2|     return ' '.join(reversed(s.split()))"]}))
+    run(tasks_dir, llm)
+    assert subprocess.run([sys.executable, "test_mylib.py"], cwd=src.parent, capture_output=True).returncode == 0
+    first, second = [p for p in llm.prompts if "def first_n" in p]
+    assert "8|         s += x + 1" in first and "test_total" in first.split("Failing now:")[1]
+    assert "8|         s += x\n" in second and "test_total" not in second.split("Failing now:")[1]
+
+
+def answer(tasks_dir, task):
+    return (tasks_dir / task / "answer.txt").read_text().strip()
+
+
+DROPPED = "1669 - 36*3"            # leaves out the deliveries: the numbers 2 and 87 are unused
+FULL = "1669 - 36*3 + 2*87"
+
+
+def test_plain_answers_get_no_second_opinion(tasks_dir):
+    """The organisers' examples use every number and plain lookups: nothing is risky, nothing is re-solved."""
+    llm = FakeLLM(REPLIES)
+    run(tasks_dir, llm)
+    assert all(t.split("#")[1].isdigit() for t in llm.tags)
+
+
+def test_dropped_step_gets_a_second_opinion_and_the_dispute_is_settled(tasks_dir):
+    from harness import config
+    llm = FakeLLM(dict(REPLIES, **{"1669 boxes": DROPPED}), by_model={("1669 boxes", config.REASON): FULL})
+    status = run(tasks_dir, llm)
+    assert answer(tasks_dir, "math_0004") == "1735"
+    assert status["math_0004"] == "answered, changed by second opinion"
+    dispute = next(p for p in llm.prompts if "Two programs for this task disagree" in p)
+    assert f"Program A gives '1561':\n{DROPPED}\n" in dispute and "Program B gives '1735'" in dispute
+
+
+def test_dispute_settled_for_the_first_answer_keeps_it(tasks_dir):
+    from harness import config
+    llm = FakeLLM(dict(REPLIES, **{"1669 boxes": DROPPED}), by_model={
+        ("Two programs for this task disagree", config.REASON): DROPPED, ("1669 boxes", config.REASON): FULL})
+    status = run(tasks_dir, llm)
+    assert answer(tasks_dir, "math_0004") == "1561" and status["math_0004"] == "answered"
+    assert "math_0004#d0" in llm.tags
+
+
+def test_risky_marks_aggregates_and_notes_but_not_plain_lookups():
+    from harness.solvers.pot import risky
+    assert not risky("q", "search", "kb[kb['Sergei Garcia']['Employer']]['Headquarters']")
+    assert risky("q", "search", "min(kb, key=lambda n: kb[n]['Born'])")
+    assert risky("q", "notes", "'Osaka'")
+    assert not risky("A shop has 5 apples and sells 2. Write it: echo 42 > answer.txt.", "math", "5 - 2")
+    assert not risky("q", "data_analysis", "sales['units'].sum()")

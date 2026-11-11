@@ -1,6 +1,6 @@
 import asyncio
 
-from harness.llm import LLM, Budget
+from harness.llm import LLM, Budget, Gate
 
 
 class Usage:
@@ -24,7 +24,7 @@ class SlowModel:
 def make(total):
     llm = LLM.__new__(LLM)        # skip openJiuwen client construction
     llm.budget, llm.trace_path, llm.calls, llm.failures_in_row, llm.dead = Budget(total, 0), None, 0, 0, False
-    llm._gate, llm._model = asyncio.Semaphore(5), SlowModel()
+    llm._gate, llm._model = Gate(5), SlowModel()
     return llm
 
 
