@@ -16,3 +16,11 @@ def test_prose_around_code_is_dropped():
 def test_broken_code_is_returned_for_the_retry_message():
     assert extract_code("1 +") == "1 +"
 
+
+
+def test_unwrap_drops_a_lookup_of_the_answer():
+    from harness.solvers.pot import unwrap
+    err = 'KeyError: "no card titled \'Osaka\'"'
+    assert unwrap("kb[kb[kb['A']['Employer']]['Headquarters']]", err) == "kb[kb['A']['Employer']]['Headquarters']"
+    assert unwrap("kb[kb['A']['Employer']]['Headquarters']", err) is None      # a missing card inside the chain stays a miss
+    assert unwrap("kb[kb['A']['Employer']]", "KeyError: \"no field 'Employer'\"") is None

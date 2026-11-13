@@ -39,6 +39,23 @@ ASK = {
 }
 
 
+# Sentences after the question that only say which tool to use and where to save
+# the answer. The harness does both, and input is billed, so they are cut. A
+# sentence that could carry the answer format is kept.
+BOILERPLATE = re.compile(r"answer\.txt|(?:current|working) directory|\b(?:bash|shell|grep|python3)\b|file tools", re.I)
+FORMAT = re.compile(r"\?|round|decimal|digit|format|upper|lower|sort|comma|separat|percent|integer|unit|word|name", re.I)
+
+
+def brief(instruction: str) -> str:
+    """The instruction without the trailing tool and answer.txt sentences."""
+    parts = re.split(r"(?<=[.!?])\s+", instruction.strip())
+    last_question = max((i for i, x in enumerate(parts) if "?" in x), default=None)
+    if last_question is None:
+        return instruction
+    return " ".join(x for i, x in enumerate(parts)
+                    if i <= last_question or not BOILERPLATE.search(x) or FORMAT.search(x))
+
+
 def compose(instruction: str, context: str, family: str) -> str:
     return "\n\n".join(x for x in (instruction, context, ASK.get(family, ASK[""])) if x)
 
@@ -114,6 +131,27 @@ def check_answer(task: Task, out: str) -> tuple[str | None, str]:
     return ans, ""
 
 
+def unwrap(code: str, error: str) -> str | None:
+    """`kb[X]` that failed because X is no card title -> `X`.
+
+    The model sometimes wraps a finished chain in one more lookup. Such a
+    program asks for a whole card, which is never an answer, and the value it
+    used as the title is what the chain produced.
+    """
+    if "no card titled" not in error:
+        return None
+    try:
+        body = ast.parse(code).body
+    except SyntaxError:
+        return None
+    last = body[-1] if body else None
+    if (isinstance(last, ast.Expr) and isinstance(last.value, ast.Subscript)
+            and isinstance(last.value.value, ast.Name) and last.value.value.id == "kb"):
+        body[-1] = ast.Expr(last.value.slice)
+        return ast.unparse(ast.Module(body, []))
+    return None
+
+
 def hopeless(error: str, columns: list[str]) -> bool:
     """The data lacks what the question needs; another call would not find it.
 
@@ -175,13 +213,18 @@ async def solve(task: Task, work: Path, llm, context: str = "", prelude: str = "
     messages = [{"role": "system", "content": SYSTEM}]
     if shot in SHOTS:
         messages += [{"role": "user", "content": SHOTS[shot][0]}, {"role": "assistant", "content": SHOTS[shot][1]}]
-    messages.append({"role": "user", "content": compose(task.instruction, context, shot) + note})
+    instruction = brief(task.instruction) if shot else task.instruction    # unknown task kinds keep every word
+    messages.append({"role": "user", "content": compose(instruction, context, shot) + note})
     for step, (model, max_tokens) in enumerate(chain or config.CHAIN):
         reply = await llm.ask(model, messages, max_tokens, tag=f"{task.id}#{label}{step}")
         if reply is None:
             break
         code = extract_code(reply.text)
         res = await run_program(code, work, prelude, config.EXEC_TIMEOUT_S)
+        if not res.ok and (inner := unwrap(code, res.error)):
+            peeled = await run_program(inner, work, prelude, config.EXEC_TIMEOUT_S)
+            if peeled.ok and repr(peeled.out.strip()) in res.error:     # the missing title is the chain's own result
+                code, res = inner, peeled
         if res.ok:
             written = work / "answer.txt"    # the program followed the instruction literally
             out = res.out if res.out.strip() or not written.is_file() else written.read_text(errors="replace")
